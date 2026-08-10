@@ -1,0 +1,26 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+
+# Auth / secrets (never commit)
+.auth/
+*.storage.json
+funplus_auth.json
+storage_state.json
+
+# Temp reverse-engineering artifacts
+.tmp/
+.playwright/
+test-results/
+playwright-report/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
