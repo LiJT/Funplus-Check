@@ -228,7 +228,7 @@ def extract_token_from_storage(storage_state: Dict[str, Any]) -> Dict[str, str]:
             if "fp_uid" in lower or lower.endswith("bV".lower()) or "fpuid" in lower:
                 found["fp_uid"] = value
             # Some keys are obfuscated; collect long opaque strings
-            if len(value) >= 32 and re.fullmatch(r"[A-Za-z0-9._\-=]+", value):
+            if len(value) >= 32 and re.fullmatch(r"[A-Za-z0-9._+=/-]+", value):
                 candidates.append(value)
 
     for cookie in storage_state.get("cookies") or []:

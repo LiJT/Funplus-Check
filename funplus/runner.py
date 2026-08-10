@@ -369,9 +369,10 @@ def run() -> int:
             if browse_result.get("ui_claims"):
                 lines.append("UI 领取：" + ", ".join(browse_result["ui_claims"]))
         except Exception as exc:
-            ok = False
-            lines.append(f"浏览器任务异常：{exc}")
+            print(f"浏览器任务异常（将继续执行 API 任务）：{exc}")
             traceback.print_exc()
+            lines.append(f"浏览器任务异常：{exc}")
+            # Do not hard-fail the whole job; API claim path can still succeed.
 
         client = build_client(
             auth,

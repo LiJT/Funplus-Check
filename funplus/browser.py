@@ -58,7 +58,7 @@ async def read_auth_from_page(page: Page) -> Dict[str, str]:
             candidates.append(val)
         if "fp_uid" in lower or "fpuid" in lower:
             fp_uid = val
-        if len(val) >= 32 and re.fullmatch(r"[A-Za-z0-9._\\-=]+", val):
+        if len(val) >= 32 and re.fullmatch(r"[A-Za-z0-9._+=/-]+", val):
             candidates.append(val)
 
     for part in cookie.split(";"):
