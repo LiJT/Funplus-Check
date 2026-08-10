@@ -27,16 +27,21 @@ Cookie / token 过期后，重新导出并更新 Secret 即可。
 
 ### 1. 本地导出登录态
 
+**推荐（一键刷新）：** 双击仓库根目录的 `refresh_auth.bat`  
+它会打开浏览器让你登录，校验成功后自动更新 GitHub Secret `FUNPLUS_AUTH`，并可选立刻触发一次 Actions。
+
+也可以手动：
+
 ```bash
 pip install -r requirements.txt
 python -m playwright install chromium
-python export_auth.py
+python -u export_auth.py --push-secret
 ```
 
-按提示在弹出的浏览器中完成邮箱验证码登录，回到终端按 Enter。会生成：
+导出文件（本地私有，勿提交）：
 
 - `.auth/funplus_auth.json`
-- `.auth/funplus_auth.b64.txt`（粘贴到 GitHub Secret）
+- `.auth/funplus_auth.b64.txt`
 
 ### 2. 配置 GitHub Secrets
 

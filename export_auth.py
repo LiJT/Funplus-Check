@@ -4,18 +4,17 @@
 
 用法：
   python -u export_auth.py
-
-浏览器打开后请手动完成邮箱验证码登录。
-脚本会自动检测登录成功并写出：
-  .auth/funplus_auth.json
-  .auth/funplus_auth.b64.txt
+  python -u export_auth.py --push-secret
+  或直接双击 refresh_auth.bat
 """
 
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -30,6 +29,7 @@ OUT_DIR = Path(".auth")
 POLL_SECONDS = 300
 POLL_INTERVAL = 2
 API_USER_INFO = "https://zone-api.funplus.com/api/user/info"
+DEFAULT_REPO = "LiJT/Funplus-Check"
 
 
 def _extract_live(page) -> dict:
@@ -70,7 +70,6 @@ def _candidate_tokens(ls: dict, cookies: str) -> list[str]:
                 continue
             key = str(k).lower()
             val = str(v).strip()
-            # nested JSON may contain auth_token
             if val.startswith("{") and "token" in val.lower():
                 try:
                     obj = json.loads(val)
@@ -95,7 +94,6 @@ def _candidate_tokens(ls: dict, cookies: str) -> list[str]:
             candidates.append(v)
         elif len(v) >= 20 and re.fullmatch(r"[A-Za-z0-9._+=/-]+", v):
             candidates.append(v)
-    # unique preserve order by length preference later
     uniq = []
     seen = set()
     for c in candidates:
@@ -124,27 +122,66 @@ def _probe_user_info(token: str, cookie: str) -> bool:
 
 
 def _pick_token(candidates: list[str], cookie: str) -> str:
-    # Prefer a token that actually validates against user/info
-    # Try longer candidates first
     for token in sorted(candidates, key=len, reverse=True):
         if _probe_user_info(token, cookie):
-            print(f"token 校验成功（长度 {len(token)}）")
+            print(f"token 校验成功（长度 {len(token)}）", flush=True)
             return token
     return candidates[0] if candidates else ""
 
 
-def _looks_logged_in(live: dict) -> bool:
-    if live.get("loginButtons", 1) == 0 and not live.get("hasLoginCta"):
-        # benefits page after login usually no big CTA
-        href = live.get("href") or ""
-        if "tilessurvive" in href:
-            return True
-    # cookie presence alone is weak; require some long storage values
-    candidates = _candidate_tokens(live.get("ls") or {}, live.get("cookie") or "")
-    return any(len(c) >= 24 for c in candidates)
+def _detect_repo() -> str:
+    try:
+        out = subprocess.check_output(
+            ["git", "remote", "get-url", "origin"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        m = re.search(r"github\.com[:/]([^/]+/[^/.]+)", out)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return DEFAULT_REPO
+
+
+def _push_secret(b64_path: Path, repo: str) -> bool:
+    if not b64_path.exists():
+        print("找不到 b64 文件，无法上传 Secret。", flush=True)
+        return False
+    try:
+        subprocess.check_call(["gh", "auth", "status"], stdout=subprocess.DEVNULL)
+    except Exception:
+        print("gh 未登录。请先运行：gh auth login", flush=True)
+        return False
+
+    print(f"正在更新 GitHub Secret FUNPLUS_AUTH → {repo} …", flush=True)
+    try:
+        with b64_path.open("rb") as fh:
+            subprocess.check_call(
+                ["gh", "secret", "set", "FUNPLUS_AUTH", "--repo", repo],
+                stdin=fh,
+            )
+        print("Secret 已更新成功。", flush=True)
+        return True
+    except subprocess.CalledProcessError as exc:
+        print(f"Secret 更新失败：{exc}", flush=True)
+        return False
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="导出 FunPlus 登录态")
+    parser.add_argument(
+        "--push-secret",
+        action="store_true",
+        help="导出成功后自动更新 GitHub Secret FUNPLUS_AUTH",
+    )
+    parser.add_argument(
+        "--repo",
+        default="",
+        help="目标仓库，默认自动检测 origin 或 LiJT/Funplus-Check",
+    )
+    args = parser.parse_args()
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     print("即将打开 Chromium（Chrome for Testing），请手动登录 FunPlus Zone。", flush=True)
     print(f"登录成功后脚本会自动导出（最长等待 {POLL_SECONDS} 秒）…", flush=True)
@@ -161,7 +198,6 @@ def main() -> int:
         while time.time() < deadline:
             page.wait_for_timeout(POLL_INTERVAL * 1000)
             try:
-                # Ensure we are on zone origin (not stuck only in oauth iframe host)
                 if "zone.funplus.com" not in (page.url or ""):
                     page.goto(LOGIN_URL, wait_until="domcontentloaded")
                     page.wait_for_timeout(1500)
@@ -170,7 +206,7 @@ def main() -> int:
                 print(f"读取页面状态失败：{exc}", flush=True)
                 continue
 
-            candidates = _candidate_tokens(live.get("ls") or {}, live.get("cookie") or {})
+            candidates = _candidate_tokens(live.get("ls") or {}, live.get("cookie") or "")
             ls_keys = sorted((live.get("ls") or {}).keys())
             print(
                 f"轮询中… loginButtons={live.get('loginButtons')} "
@@ -178,16 +214,16 @@ def main() -> int:
                 flush=True,
             )
 
-            # Only accept tokens that pass user/info
             if candidates:
                 chosen = _pick_token(candidates, live.get("cookie") or "")
                 if chosen and _probe_user_info(chosen, live.get("cookie") or ""):
                     print("已检测到有效登录态，开始导出…", flush=True)
                     break
 
-            # Try clicking Log In periodically via Playwright selectors
             try:
-                btn = page.get_by_role("button", name=re.compile(r"Log In|登录|登入", re.I)).first
+                btn = page.get_by_role(
+                    "button", name=re.compile(r"Log In|登录|登入", re.I)
+                ).first
                 if btn.count() > 0 and btn.is_visible():
                     btn.click(timeout=1500)
                     print("已点击登录入口", flush=True)
@@ -195,7 +231,6 @@ def main() -> int:
             except Exception:
                 pass
         else:
-            # dump diagnostics
             diag = {
                 "href": (live or {}).get("href"),
                 "loginButtons": (live or {}).get("loginButtons"),
@@ -215,7 +250,6 @@ def main() -> int:
             return 1
 
         page.wait_for_timeout(1500)
-        # Navigate once more to parent benefits to persist cookies
         try:
             page.goto(LOGIN_URL, wait_until="domcontentloaded")
             page.wait_for_timeout(2000)
@@ -255,11 +289,24 @@ def main() -> int:
 
     print(f"\n已导出：{json_path}", flush=True)
     print(f"Base64：{b64_path}", flush=True)
-    if h5_auth:
-        print(f"h5-auth 长度：{len(h5_auth)}", flush=True)
-    else:
+    if not h5_auth:
         print("警告：未提取到 h5-auth，Actions 可能无法调 API；请重试登录。", flush=True)
         return 1
+    print(f"h5-auth 长度：{len(h5_auth)}", flush=True)
+
+    if args.push_secret:
+        repo = args.repo.strip() or _detect_repo()
+        if not _push_secret(b64_path, repo):
+            return 2
+        print("\n完成：本地登录态已刷新，GitHub Actions 将使用新 Secret。", flush=True)
+    else:
+        print(
+            "\n如需同步到 GitHub，请运行：\n"
+            "  refresh_auth.bat\n"
+            "或：\n"
+            "  python -u export_auth.py --push-secret",
+            flush=True,
+        )
     return 0
 
 
