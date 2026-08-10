@@ -237,12 +237,14 @@ def extract_token_from_storage(storage_state: Dict[str, Any]) -> Dict[str, str]:
         lower = name.lower()
         if not value:
             continue
-        if any(k in lower for k in ("auth", "token", "h5")) and len(value) > 20:
-            if not found["h5_auth"] or len(value) > len(found["h5_auth"]):
+        if lower in ("priv-auth", "h5-auth") or any(
+            k in lower for k in ("auth", "token", "h5")
+        ):
+            if len(value) > 20 and (not found["h5_auth"] or len(value) > len(found["h5_auth"])):
                 found["h5_auth"] = value
-        if "fp_uid" in lower or "fpuid" in lower:
+        if lower in ("priv-auth-fpuid",) or "fp_uid" in lower or "fpuid" in lower:
             found["fp_uid"] = value
-        if len(value) >= 32 and re.fullmatch(r"[A-Za-z0-9._\-=]+", value):
+        if len(value) >= 32 and re.fullmatch(r"[A-Za-z0-9._+=/-]+", value):
             candidates.append(value)
 
     if not found["h5_auth"] and candidates:
