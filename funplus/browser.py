@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
@@ -67,12 +68,15 @@ async def read_auth_from_page(page: Page) -> Dict[str, str]:
             continue
         key, value = part.split("=", 1)
         lower = key.lower()
-        if any(x in lower for x in ("auth", "token", "h5")) and len(value) > 20:
+        if lower in ("priv-auth",) or (
+            any(x in lower for x in ("auth", "token", "h5")) and len(value) > 20
+        ):
             candidates.append(value)
-        if "fp_uid" in lower or "fpuid" in lower:
+        if lower in ("priv-auth-fpuid",) or "fp_uid" in lower or "fpuid" in lower:
             fp_uid = value
 
     if candidates:
+        # Prefer priv-auth-like longer tokens
         h5_auth = max(candidates, key=len)
     return {"h5_auth": h5_auth, "fp_uid": fp_uid}
 
@@ -80,136 +84,129 @@ async def read_auth_from_page(page: Page) -> Dict[str, str]:
 async def ensure_logged_in(page: Page, timeout_ms: int = 20000) -> bool:
     await page.goto(f"{ZONE_BASE}/benefits", wait_until="domcontentloaded")
     try:
-        # Logged-out pages show a prominent Log In button / CTA.
-        login_visible = await page.get_by_role("button", name=re.compile("Log In|登录|登入", re.I)).count()
-        # Also probe localStorage token
+        login_visible = await page.get_by_role(
+            "button", name=re.compile("Log In|登录|登入", re.I)
+        ).count()
         auth = await read_auth_from_page(page)
-        if auth.get("h5_auth"):
+        if auth.get("h5_auth") and len(auth["h5_auth"]) >= 80:
             return True
         if login_visible > 0:
-            # Wait a bit for SPA hydration then recheck
             await page.wait_for_timeout(2500)
             auth = await read_auth_from_page(page)
-            if auth.get("h5_auth"):
+            if auth.get("h5_auth") and len(auth["h5_auth"]) >= 80:
                 return True
             text = await page.locator("body").inner_text(timeout=timeout_ms)
             if re.search(r"Log in to|登录.*账号|登入.*帳戶", text, re.I):
                 return False
-        return bool(auth.get("h5_auth"))
+        return bool(auth.get("h5_auth") and len(auth["h5_auth"]) >= 80)
     except Exception:
         auth = await read_auth_from_page(page)
-        return bool(auth.get("h5_auth"))
+        return bool(auth.get("h5_auth") and len(auth["h5_auth"]) >= 80)
+
+
+def _article_detail_url(article: Dict[str, Any]) -> str:
+    aid = article.get("id") or article.get("article_id")
+    atype = article.get("type", 0)
+    author = article.get("author_fpid", article.get("fpid", 0))
+    app_path = f"/article/{aid}?type={atype}&author_fpid={author}"
+    return (
+        f"{ZONE_BASE}/communityDetail/articleDetail"
+        f"?community-app={quote(app_path, safe='')}"
+    )
 
 
 async def browse_community_posts(page: Page, target: int = 5) -> Dict[str, Any]:
-    """Open community home and visit several post detail pages."""
+    """Open community home, capture latest articles, visit detail pages."""
+    articles: List[Dict[str, Any]] = []
     visited: List[str] = []
-    discovered: List[str] = []
 
-    def _on_response(response) -> None:
+    async def _on_response(response) -> None:
+        nonlocal articles
+        url = response.url
+        if "vertical/article/lists" not in url:
+            return
+        if response.status != 200:
+            return
         try:
-            url = response.url
-            if any(
-                k in url.lower()
-                for k in ("article", "post", "feed", "dynamic", "thread", "content/detail")
-            ):
-                discovered.append(url)
+            data = await response.json()
         except Exception:
-            pass
+            return
+        payload = (data or {}).get("data") or {}
+        items = payload.get("articles") or []
+        if isinstance(items, list) and items:
+            articles = [x for x in items if isinstance(x, dict) and x.get("id")]
+            print(f"捕获到社区帖子列表：{len(articles)} 条")
 
     page.on("response", _on_response)
     await page.goto(ZONE_HOME, wait_until="domcontentloaded")
-    await page.wait_for_timeout(5000)
+    await page.wait_for_timeout(8000)
 
-    # Community may load inside iframe / wujie micro-app. Collect candidate links broadly.
-    hrefs = await page.evaluate(
-        """() => {
-          const out = [];
-          const push = (href) => {
-            if (!href) return;
-            if (href.startsWith('javascript:')) return;
-            if (out.includes(href)) return;
-            if (/article|post|detail|thread|feed|dynamic|content|community/i.test(href)) out.push(href);
-          };
-          document.querySelectorAll('a[href]').forEach(a => {
-            const raw = a.getAttribute('href') || '';
-            const abs = raw.startsWith('/') ? (location.origin + raw) : a.href;
-            push(abs);
-          });
-          document.querySelectorAll('[data-id], [data-article-id], [data-post-id]').forEach(el => {
-            const id = el.getAttribute('data-id') || el.getAttribute('data-article-id') || el.getAttribute('data-post-id');
-            if (id) push(location.origin + location.pathname + '?community-app=%2Farticle%2F' + id);
-          });
-          document.querySelectorAll('iframe').forEach(f => {
-            try {
-              f.contentDocument && f.contentDocument.querySelectorAll('a[href]').forEach(a => push(a.href));
-            } catch (e) {}
-          });
-          document.querySelectorAll('*').forEach(el => {
-            if (el.shadowRoot) {
-              el.shadowRoot.querySelectorAll('a[href]').forEach(a => push(a.href));
-            }
-          });
-          return out;
-        }"""
-    )
+    # Retry once if list not captured (slow network / tab not ready)
+    if not articles:
+        await page.reload(wait_until="domcontentloaded")
+        await page.wait_for_timeout(8000)
 
-    # Also synthesize detail URLs from zone community-app deep links found in page HTML
-    html = await page.content()
-    for match in re.findall(r"community-app=%2F([^\\&\"']+)", html):
-        decoded = match.replace("%2F", "/")
-        discovered.append(f"{ZONE_BASE}?community-app=%2F{match}")
-        if any(k in decoded.lower() for k in ("article", "post", "detail", "dynamic")):
-            hrefs.append(f"{ZONE_BASE}?community-app=%2F{match}")
+    if not articles:
+        # Fallback: click cards inside page / wujie if API capture failed
+        return await _browse_by_clicking_cards(page, target)
 
-    # Deduplicate while preserving order
-    ordered: List[str] = []
-    for href in list(hrefs) + discovered:
-        if href not in ordered:
-            ordered.append(href)
-
-    # Fallback: clickable cards in main page listing
-    if not ordered:
-        cards = page.locator(
-            "[class*='post'], [class*='feed'], [class*='article'], [class*='card'], [class*='Item']"
-        )
-        count = await cards.count()
-        for i in range(min(count, target)):
-            card = cards.nth(i)
-            try:
-                await card.click(timeout=3000)
-                await page.wait_for_timeout(2500)
-                visited.append(page.url)
-                await page.go_back(wait_until="domcontentloaded")
-                await page.wait_for_timeout(1500)
-            except Exception as exc:
-                print(f"社区卡片点击失败 #{i+1}: {exc}")
-        return {"visited": visited, "count": len(visited), "mode": "card-click"}
-
-    for href in ordered:
+    for art in articles:
         if len(visited) >= target:
             break
-        if href in visited:
-            continue
-        # Skip pure asset/API noise
-        if any(href.lower().endswith(ext) for ext in (".js", ".css", ".png", ".jpg", ".svg", ".woff")):
-            continue
+        aid = art.get("id")
+        url = _article_detail_url(art)
         try:
-            await page.goto(href, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(2500)
-            visited.append(href)
-            print(f"已浏览帖子：{href}")
+            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            await page.wait_for_timeout(4000)
+            visited.append(str(aid))
+            title = str(art.get("title") or aid)
+            print(f"已浏览帖子：{aid} {title[:40]}")
         except Exception as exc:
-            print(f"打开帖子失败：{href} ({exc})")
+            print(f"打开帖子失败：{aid} ({exc})")
 
-    # Return to task center for claim UI if needed
     try:
         await page.goto(f"{ZONE_BASE}/benefits/pointstask", wait_until="domcontentloaded")
         await page.wait_for_timeout(2000)
     except Exception:
         pass
 
-    return {"visited": visited, "count": len(visited), "mode": "href"}
+    return {
+        "visited": visited,
+        "count": len(visited),
+        "mode": "article-detail",
+        "available": len(articles),
+    }
+
+
+async def _browse_by_clicking_cards(page: Page, target: int) -> Dict[str, Any]:
+    visited: List[str] = []
+    print("未捕获到帖子 API，改用页面点击兜底…")
+    # Try clicking in main frame and known iframe
+    frames = [page] + [
+        f for f in page.frames if "community" in (f.url or "") or f.name == "community-app"
+    ]
+    for frame in frames:
+        cards = frame.locator(
+            ".article-item, .article_item, [class*='article'], [class*='ArticleCard'], "
+            "[class*='feed-item'], [class*='list-item']"
+        )
+        try:
+            count = await cards.count()
+        except Exception:
+            count = 0
+        for i in range(min(count, target * 2)):
+            if len(visited) >= target:
+                break
+            card = cards.nth(i)
+            try:
+                await card.click(timeout=3000)
+                await page.wait_for_timeout(3500)
+                visited.append(page.url)
+                await page.goto(ZONE_HOME, wait_until="domcontentloaded")
+                await page.wait_for_timeout(2500)
+            except Exception as exc:
+                print(f"社区卡片点击失败 #{i+1}: {exc}")
+    return {"visited": visited, "count": len(visited), "mode": "card-click"}
 
 
 async def click_claim_buttons(page: Page) -> List[str]:
