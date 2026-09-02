@@ -228,5 +228,39 @@ async def click_claim_buttons(page: Page) -> List[str]:
     return claimed
 
 
+async def claim_benefit_packs(page: Page) -> List[str]:
+    """Visit /benefits/pack and click any enabled claim buttons (weekly/level packs)."""
+    claimed: List[str] = []
+    await page.goto(f"{ZONE_BASE}/benefits/pack", wait_until="domcontentloaded")
+    await page.wait_for_timeout(4500)
+
+    # Match Claim Now / 立即領取 / 领取, but skip disabled Already Claimed buttons.
+    pattern = re.compile(r"立即[领取領取]|领取|領取|Claim\s*Now", re.I)
+    skip_pattern = re.compile(r"已[领取領取]|Already\s*Claimed|Claimed", re.I)
+
+    for _ in range(6):
+        buttons = page.get_by_role("button", name=pattern)
+        count = await buttons.count()
+        clicked_any = False
+        for i in range(count):
+            btn = buttons.nth(i)
+            try:
+                if not await btn.is_enabled():
+                    continue
+                label = (await btn.inner_text()).strip()
+                if not label or skip_pattern.search(label):
+                    continue
+                await btn.click(timeout=4000)
+                await page.wait_for_timeout(1800)
+                claimed.append(label)
+                clicked_any = True
+            except Exception as exc:
+                print(f"礼包页领取点击失败：{exc}")
+        if not clicked_any:
+            break
+        await page.wait_for_timeout(1500)
+    return claimed
+
+
 def run_async(coro):
     return asyncio.get_event_loop().run_until_complete(coro)

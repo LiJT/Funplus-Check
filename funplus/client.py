@@ -31,6 +31,23 @@ TASK_GAME = 4
 REWARD_MANUAL = 1
 REWARD_AUTO = 2
 
+# member_gift CycleType (frontend wJ enum, 1-indexed)
+GIFT_CYCLE_DAILY = 1
+GIFT_CYCLE_WEEKLY = 2
+GIFT_CYCLE_MONTHLY = 3
+GIFT_CYCLE_YEARLY = 4
+GIFT_CYCLE_LEVEL = 5
+GIFT_CYCLE_LIFELONG = 6
+
+GIFT_CYCLE_LABELS = {
+    GIFT_CYCLE_DAILY: "每日礼包",
+    GIFT_CYCLE_WEEKLY: "每周礼包",
+    GIFT_CYCLE_MONTHLY: "每月礼包",
+    GIFT_CYCLE_YEARLY: "每年礼包",
+    GIFT_CYCLE_LEVEL: "等级礼包",
+    GIFT_CYCLE_LIFELONG: "终身礼包",
+}
+
 
 def parse_cookie_string(cookie: str) -> Dict[str, str]:
     result: Dict[str, str] = {}
@@ -72,6 +89,55 @@ def is_task_finished(task: Dict[str, Any]) -> bool:
 
 def needs_goto(task: Dict[str, Any]) -> bool:
     return (not can_claim_task(task)) and (not is_task_finished(task))
+
+
+def _gift_field(gift: Dict[str, Any], *names: str) -> Any:
+    for name in names:
+        if name in gift and gift.get(name) is not None:
+            return gift.get(name)
+        lower = name.lower()
+        for key, value in gift.items():
+            if str(key).lower() == lower and value is not None:
+                return value
+    return None
+
+
+def gift_cycle_label(gift: Dict[str, Any]) -> str:
+    cycle = _as_int(_gift_field(gift, "CycleType", "cycle_type"))
+    name = str(_gift_field(gift, "NameKey", "name", "title") or "").strip()
+    label = GIFT_CYCLE_LABELS.get(cycle, f"周期{cycle}" if cycle else "会员礼包")
+    return f"{label}({name})" if name else label
+
+
+def gift_display_name(gift: Dict[str, Any]) -> str:
+    return gift_cycle_label(gift)
+
+
+def can_receive_member_gift(gift: Dict[str, Any], vip_level: int = 0) -> bool:
+    """Mirrors pack page filter: Receiveable && UsedRemaining > 0 && rank ok."""
+    if not gift:
+        return False
+    receiveable = _gift_field(gift, "Receiveable", "receiveable", "can_receive")
+    if receiveable is not None and not bool(receiveable):
+        return False
+    remaining = _gift_field(gift, "UsedRemaining", "used_remaining")
+    if remaining is not None and _as_int(remaining) <= 0:
+        return False
+    required_vip = _as_int(_gift_field(gift, "Vip", "vip", "vip_level"))
+    if required_vip > 0 and vip_level > 0 and required_vip > vip_level:
+        return False
+    status = _gift_field(gift, "status", "receive_status", "state")
+    if status in (2, "2", "received", "claimed", "done"):
+        return False
+    if receiveable is True:
+        return True
+    if remaining is not None and _as_int(remaining) > 0:
+        return True
+    return bool(_gift_field(gift, "can_receive", "receivable"))
+
+
+def member_gift_id(gift: Dict[str, Any]) -> str:
+    return str(_gift_field(gift, "Id", "id", "gift_id") or "")
 
 
 @dataclass
@@ -177,24 +243,73 @@ class FunplusClient:
         return self.post("task/get", {"task_key": task_key})
 
     def member_gift_list(self) -> List[Dict[str, Any]]:
-        result = self.post("member_gift/list")
+        """Flat gift list (weekly / monthly / daily packs). Frontend uses GET."""
+        result = self.get("member_gift/list")
+        return _gift_items_from_result(result)
+
+    def member_gift_list_grouped(self) -> List[Dict[str, Any]]:
+        """Grouped by vip level (rank packs). Frontend uses GET."""
+        result = self.get("member_gift/list_grouped")
         data = _unwrap(result)
-        if isinstance(data, dict):
-            items = data.get("list") or data.get("items") or data.get("gift_list") or []
-            return items if isinstance(items, list) else []
         if isinstance(data, list):
             return data
+        if isinstance(data, dict):
+            groups = data.get("list") or data.get("groups") or data.get("items") or []
+            return groups if isinstance(groups, list) else []
         return []
 
-    def member_gift_list_grouped(self) -> Dict[str, Any]:
-        result = self.post("member_gift/list_grouped")
-        return _unwrap(result) if isinstance(_unwrap(result), dict) else {}
+    def iter_member_gifts(self) -> List[Dict[str, Any]]:
+        """Merge flat + grouped gifts, dedupe by id."""
+        merged: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def _add(items: List[Dict[str, Any]]) -> None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                gid = member_gift_id(item)
+                if gid and gid in seen:
+                    continue
+                if gid:
+                    seen.add(gid)
+                merged.append(item)
+
+        try:
+            _add(self.member_gift_list())
+        except Exception:
+            pass
+
+        try:
+            for group in self.member_gift_list_grouped():
+                if not isinstance(group, dict):
+                    continue
+                gifts = group.get("gifts") or group.get("gift_list") or []
+                if isinstance(gifts, list):
+                    _add([g for g in gifts if isinstance(g, dict)])
+        except Exception:
+            pass
+
+        return merged
 
     def receive_member_gift(self, gift_id: str) -> Dict[str, Any]:
         return self.post(f"member_gift/receive?id={gift_id}")
 
     def vip_rights_get(self, rights_key: str) -> Dict[str, Any]:
         return self.post("vip/rights_get", {"rights_key": rights_key})
+
+
+def _gift_items_from_result(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if not isinstance(result, dict):
+        return []
+    if result.get("code") not in (0, "0", None):
+        return []
+    data = _unwrap(result)
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if isinstance(data, dict):
+        items = data.get("list") or data.get("items") or data.get("gift_list") or []
+        return items if isinstance(items, list) else []
+    return []
 
 
 def _unwrap(result: Dict[str, Any]) -> Any:

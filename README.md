@@ -5,7 +5,7 @@
 1. **会员签到礼**（`/signinbenefit`）：调用 `checkin/month` 领取当日奖励  
 2. **任务中心**（`/benefits/pointstask`）：自动领取「游戏专区签到」「商城支付」等已完成任务积分  
 3. **活跃任务 - 浏览帖子**：登录态下打开社区首页并浏览多条帖子，再尝试领取  
-4. **会员专享礼包**：若有可领取项则自动领取  
+4. **会员专享礼包**（`/benefits/pack`）：每日检查并领取每周礼包、等级礼包等免费项（已领则跳过）  
 
 实现风格参考 [SJS-Check](https://github.com/LiJT/SJS-Check)：GitHub Actions 定时执行 + Secret 配置凭据 + 可选 PushPlus 推送。
 
@@ -83,7 +83,7 @@ python main.py
 | 周签到（若开放） | `checkin/week/info` → `checkin/week` |
 | 任务中心 | `task/task_list`（日常/活跃/成长/游戏）→ `get_times>0` 时 `task/get` |
 | 浏览帖子 | Playwright 打开社区并访问帖子，再领取 |
-| 会员礼包 | `member_gift/list` → 可领则 `member_gift/receive` |
+| 会员礼包 `benefits/pack` | `GET member_gift/list` + `GET member_gift/list_grouped` → 可领则 `member_gift/receive`（含每周/等级礼包；每天执行，已领自动跳过） |
 
 「商城支付 1 次储值订单」只有你在游戏/商城真实消费后才会变成可领取；脚本负责**自动点领取**，不会替你下单。
 

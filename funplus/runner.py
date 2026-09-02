@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from funplus.browser import (
     browse_community_posts,
+    claim_benefit_packs,
     click_claim_buttons,
     create_context,
     ensure_logged_in,
@@ -25,9 +26,12 @@ from funplus.client import (
     TASK_GROWTH,
     FunplusClient,
     can_claim_task,
+    can_receive_member_gift,
     cookies_from_storage,
     extract_token_from_storage,
+    gift_display_name,
     load_auth_payload,
+    member_gift_id,
     needs_goto,
     parse_cookie_string,
 )
@@ -269,37 +273,44 @@ def summarize_tasks(tasks: List[Dict[str, Any]]) -> str:
     return "\n".join(lines) if lines else "- （无任务）"
 
 
-def claim_member_gifts(client: FunplusClient) -> List[str]:
+def claim_member_gifts(client: FunplusClient, vip_level: int = 0) -> List[str]:
     lines: List[str] = []
+    vip = vip_level
+    if not vip:
+        vip = _as_int(client.user_info().get("vip_level"))
+
     try:
-        gifts = client.member_gift_list()
+        gifts = client.iter_member_gifts()
     except Exception as exc:
         return [f"会员礼包：获取失败 {exc}"]
 
-    for gift in gifts:
-        gift_id = str(gift.get("id") or gift.get("gift_id") or "")
-        name = str(gift.get("name") or gift.get("title") or gift_id or "gift")
-        status = gift.get("status") or gift.get("receive_status") or gift.get("state")
-        # Heuristic: status==1 / can_receive / receiveable
-        can_receive = bool(
-            gift.get("can_receive")
-            or gift.get("receivable")
-            or status in (1, "1", "receivable", "can_receive")
-        )
+    claimable = [g for g in gifts if can_receive_member_gift(g, vip_level=vip)]
+    if not claimable:
+        lines.append("会员礼包：当前没有可领取项（每日/每周/等级礼包均已领或未到条件）")
+        return lines
+
+    for gift in claimable:
+        gift_id = member_gift_id(gift)
+        name = gift_display_name(gift)
         if not gift_id:
-            continue
-        if not can_receive:
             continue
         result = client.receive_member_gift(gift_id)
         code = result.get("code")
-        msg = result.get("msg") or ""
+        msg = result.get("msg") or result.get("message") or ""
         if code in (0, "0"):
             lines.append(f"礼包领取成功：{name}")
+        elif msg in ("verification failed",) or "already" in str(msg).lower():
+            lines.append(f"礼包已领取：{name}")
         else:
             lines.append(f"礼包领取失败：{name} code={code} msg={msg}")
-    if not lines:
-        lines.append("会员礼包：没有可领取项（或需角色绑定）")
     return lines
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 async def run_browser_parts(auth: Dict[str, Any]) -> Dict[str, Any]:
@@ -313,6 +324,7 @@ async def run_browser_parts(auth: Dict[str, Any]) -> Dict[str, Any]:
         "fp_uid": "",
         "browse": {},
         "ui_claims": [],
+        "pack_claims": [],
     }
     try:
         logged_in = await ensure_logged_in(page)
@@ -326,6 +338,7 @@ async def run_browser_parts(auth: Dict[str, Any]) -> Dict[str, Any]:
         # Always browse community posts for active task progress
         result["browse"] = await browse_community_posts(page, target=5)
         result["ui_claims"] = await click_claim_buttons(page)
+        result["pack_claims"] = await claim_benefit_packs(page)
 
         # Persist potentially refreshed cookies for logging only (not written back to GH secrets)
         try:
@@ -368,6 +381,8 @@ def run() -> int:
             )
             if browse_result.get("ui_claims"):
                 lines.append("UI 领取：" + ", ".join(browse_result["ui_claims"]))
+            if browse_result.get("pack_claims"):
+                lines.append("礼包页领取：" + ", ".join(browse_result["pack_claims"]))
         except Exception as exc:
             print(f"浏览器任务异常（将继续执行 API 任务）：{exc}")
             traceback.print_exc()
@@ -410,7 +425,7 @@ def run() -> int:
             lines.append("二次领取：")
             lines.extend(still_claimable)
 
-        lines.extend(claim_member_gifts(client))
+        lines.extend(claim_member_gifts(client, vip_level=_as_int(user.get("vip_level"))))
 
         # Hint unfinished goto tasks
         unfinished = [
