@@ -1,36 +1,128 @@
-# FunPlus Zone 自动签到（Tiles Survive）
+# FunPlus Zone Auto Check-in (Tiles Survive)
 
-面向 [FunPlus Zone / Tiles Survive](https://zone.funplus.com/tilessurvive/) 的 GitHub Actions 每日自动化：
+**Language:** English · [简体中文](README.zh-CN.md)
 
-1. **会员签到礼**（`/signinbenefit`）：调用 `checkin/month` 领取当日奖励  
-2. **任务中心**（`/benefits/pointstask`）：自动领取「游戏专区签到」「商城支付」等已完成任务积分  
-3. **活跃任务 - 浏览帖子**：登录态下打开社区首页并浏览多条帖子，再尝试领取  
-4. **会员专享礼包**（`/benefits/pack`）：每日检查并领取每周礼包、等级礼包等免费项（已领则跳过）  
+Automated daily tasks for [FunPlus Zone / Tiles Survive](https://zone.funplus.com/tilessurvive/) via GitHub Actions — sign-in rewards, task claims, community browsing, and free member packs.
 
-实现风格参考 [SJS-Check](https://github.com/LiJT/SJS-Check)：GitHub Actions 定时执行 + Secret 配置凭据 + 可选 PushPlus 推送。
+---
 
-## 结论：GitHub Actions 能做吗？
+## Beginner guide: Fork & deploy on your GitHub (no coding required)
 
-**可以。** 但 FunPlus 登录是邮箱验证码，不适合把 Gmail 密钥放进 GitHub。推荐方案：
+This section is for users who have **never used GitHub Actions** before. Follow the steps in order.
 
-- 你在本地浏览器登录一次  
-- 用本仓库 `export_auth.py` 导出 Cookie / localStorage（含 `h5-auth`）  
-- 把导出内容放进仓库 Secret `FUNPLUS_AUTH`  
-- Actions 每次带着这份登录态跑任务  
+### What you need
 
-Cookie / token 过期后，重新导出并更新 Secret 即可。  
-**不要**用 Actions Cache 存登录态：Cache 不是密钥存储，存在被读取风险，且会丢。
+- A **GitHub account** (free is fine)
+- A **Windows PC** (recommended) or Mac/Linux
+- **Python 3.9+** — download from [python.org](https://www.python.org/downloads/). During install, check **“Add Python to PATH”**.
 
-关于「累计 31 天签到后还有没有奖」：前端是**按月历/活动 active 周期**发放（`checkin/month/info` 的 `month` + `gift_list`）。一个周期内的每日格领完后，下一周期会重置天数；不是一次性 31 天永久结束。
+### Step 1 — Fork this repository
 
-## 快速开始
+1. Open this repo on GitHub.
+2. Click the **Fork** button (top-right).
+3. Leave the defaults and confirm. You now have a copy under **your** account, e.g. `https://github.com/YOUR_NAME/Funplus-Check`.
 
-### 1. 本地导出登录态
+### Step 2 — Enable GitHub Actions
 
-**推荐（一键刷新）：** 双击仓库根目录的 `refresh_auth.bat`  
-它会打开浏览器让你登录，校验成功后自动更新 GitHub Secret `FUNPLUS_AUTH`，并可选立刻触发一次 Actions。
+Workflows are often **disabled** on new forks.
 
-也可以手动：
+1. Open **your fork** → tab **Actions**.
+2. If you see a yellow banner, click **“I understand my workflows, go ahead and enable them”**.
+3. You should see the workflow **“FunPlus 每日签到”** in the list.
+
+### Step 3 — Export your FunPlus login on your PC
+
+FunPlus uses **email OTP** login. Do **not** put your Gmail password in GitHub. Instead, log in once in a browser on your computer and export a session file.
+
+**Option A — Windows one-click (easiest)**
+
+1. Install [GitHub CLI](https://cli.github.com/) and run `gh auth login` once in a terminal.
+2. Clone **your fork** to your PC (GitHub → **Code** → copy HTTPS URL):
+
+   ```bash
+   git clone https://github.com/YOUR_NAME/Funplus-Check.git
+   cd Funplus-Check
+   ```
+
+3. Double-click **`refresh_auth.bat`** in the project folder.
+4. A Chromium window opens → log in to FunPlus Zone with your email code.
+5. When login succeeds, the script uploads **`FUNPLUS_AUTH`** to **your fork** automatically.
+
+**Option B — Manual (all platforms)**
+
+```bash
+git clone https://github.com/YOUR_NAME/Funplus-Check.git
+cd Funplus-Check
+pip install -r requirements.txt
+python -m playwright install chromium
+python -u export_auth.py
+```
+
+After success, open `.auth/funplus_auth.b64.txt`, **copy the entire file contents** (one long line is normal).
+
+### Step 4 — Add the GitHub Secret
+
+1. On GitHub, open **your fork** → **Settings** → **Secrets and variables** → **Actions**.
+2. Click **New repository secret**.
+3. Name: `FUNPLUS_AUTH`
+4. Value: paste everything from `.auth/funplus_auth.b64.txt` (or the JSON from `.auth/funplus_auth.json`).
+5. Click **Add secret**.
+
+> Only **`FUNPLUS_AUTH`** is required. Optional notification via PushPlus is supported but not needed for basic use.
+
+### Step 5 — Run a test
+
+1. Go to **Actions** → **FunPlus 每日签到**.
+2. Click **Run workflow** → **Run workflow** again.
+3. Wait ~2 minutes, open the run, and check the log for **“FunPlus check-in report”**.
+4. If you see **login valid** and sign-in / pack lines, you are done.
+
+### Step 6 — Automatic schedule
+
+No extra setup. The workflow runs daily at **08:20** and **22:20 Beijing time** (UTC cron in the YAML).
+
+When login expires (days or weeks later), run **`refresh_auth.bat`** or **`export_auth.py`** again and update the `FUNPLUS_AUTH` secret.
+
+### Quick troubleshooting
+
+| Problem | What to do |
+|---------|------------|
+| Actions tab is empty / disabled | Enable workflows (Step 2). |
+| “h5-auth not found” / not logged in | Re-export auth and update `FUNPLUS_AUTH`. |
+| `refresh_auth.bat` says gh not found | Install GitHub CLI and `gh auth login`, or use Option B + Step 4 manually. |
+| Fork has no Secrets menu | You must use **your** fork and have admin access to it. |
+
+---
+
+## What gets automated
+
+1. **Daily sign-in** (`/signinbenefit`) — monthly calendar check-in  
+2. **Task center** (`/benefits/pointstask`) — claim completed tasks (e.g. game-zone sign-in)  
+3. **Community** — browse 5 posts when logged in, then claim related tasks  
+4. **Member packs** (`/benefits/pack`) — daily check for **weekly**, **level**, and other **free** packs (skips if already claimed)
+
+Inspired by [SJS-Check](https://github.com/LiJT/SJS-Check): scheduled GitHub Actions + session secret.
+
+## Can GitHub Actions do this?
+
+**Yes.** Recommended approach:
+
+- Log in once locally in a browser  
+- Export cookies / `localStorage` (includes `h5-auth`) via `export_auth.py`  
+- Store the export in secret **`FUNPLUS_AUTH`**  
+- Each Action run reuses that session  
+
+Re-export and update the secret when it expires. **Do not** store login state in Actions Cache — it is not a secrets store.
+
+**About “31-day sign-in”:** rewards follow a **monthly / active-period calendar** (`checkin/month/info`). After a period ends, a new cycle starts; it is not a one-time lifetime cap.
+
+## Quick start (upstream / local dev)
+
+### 1. Export login locally
+
+**Windows:** double-click `refresh_auth.bat` (updates `FUNPLUS_AUTH` on the linked repo if `gh` is logged in).
+
+**Manual:**
 
 ```bash
 pip install -r requirements.txt
@@ -38,66 +130,66 @@ python -m playwright install chromium
 python -u export_auth.py --push-secret
 ```
 
-导出文件（本地私有，勿提交）：
+Local files (do not commit):
 
 - `.auth/funplus_auth.json`
 - `.auth/funplus_auth.b64.txt`
 
-### 2. 配置 GitHub Secrets
+### 2. GitHub Secrets
 
-仓库 → **Settings** → **Secrets and variables** → **Actions**：
+**Settings** → **Secrets and variables** → **Actions**:
 
-| Secret | 必填 | 说明 |
-|--------|------|------|
-| `FUNPLUS_AUTH` | **是** | `funplus_auth.b64.txt` 全文，或 JSON 原文 |
-| `PUSHPLUS_TOKEN` | 否 | [PushPlus](http://www.pushplus.plus) 推送 |
+| Secret | Required | Description |
+|--------|----------|-------------|
+| `FUNPLUS_AUTH` | **Yes** | Full contents of `funplus_auth.b64.txt` or JSON |
+| `PUSHPLUS_TOKEN` | No | Optional PushPlus notifications |
 
-可选（一般不必）：
+Optional:
 
-| Secret / Var | 说明 |
-|--------------|------|
-| `FUNPLUS_H5_AUTH` | 仅 token |
-| `FUNPLUS_COOKIE` | 仅 Cookie 字符串 |
-| `FUNPLUS_STORAGE_STATE` | 原始 Playwright storage_state |
-| `FUNPLUS_BASENAME` | 默认 `/tilessurvive` |
-| `FUNPLUS_GAME_PROJECT` | 默认 `ts_global` |
+| Secret / Var | Description |
+|--------------|-------------|
+| `FUNPLUS_H5_AUTH` | Token only |
+| `FUNPLUS_COOKIE` | Cookie string only |
+| `FUNPLUS_STORAGE_STATE` | Raw Playwright `storage_state` |
+| `FUNPLUS_BASENAME` | Default `/tilessurvive` |
+| `FUNPLUS_GAME_PROJECT` | Default `ts_global` |
 
-### 3. 启用 Actions
+### 3. Enable Actions
 
-1. 打开 **Actions**，启用 workflow  
-2. 选择 **FunPlus 每日签到** → **Run workflow** 测试  
-3. 默认定时：北京时间 **08:20**、**22:20**（避开整点高峰；一天两次防单次失败）
+1. **Actions** → enable workflows  
+2. **FunPlus 每日签到** → **Run workflow** to test  
+3. Default schedule: **08:20** & **22:20** Beijing time (twice daily for reliability)
 
-## 本地试跑
+## Run locally
 
 ```bash
-# 先 export_auth.py，确保存在 .auth/funplus_auth.json
+# After export_auth.py — .auth/funplus_auth.json should exist
 python main.py
 ```
 
-## 自动化覆盖说明
+## Automation coverage
 
-| 入口 | 行为 |
-|------|------|
-| 签到福利 `signinbenefit` | `checkin/month/info` → 未签则 `checkin/month` |
-| 周签到（若开放） | `checkin/week/info` → `checkin/week` |
-| 任务中心 | `task/task_list`（日常/活跃/成长/游戏）→ `get_times>0` 时 `task/get` |
-| 浏览帖子 | Playwright 打开社区并访问帖子，再领取 |
-| 会员礼包 `benefits/pack` | `GET member_gift/list` + `GET member_gift/list_grouped` → 可领则 `member_gift/receive`（含每周/等级礼包；每天执行，已领自动跳过） |
+| Page / feature | Behavior |
+|----------------|----------|
+| Sign-in `signinbenefit` | `checkin/month/info` → `checkin/month` if not signed today |
+| Weekly sign-in (if active) | `checkin/week/info` → `checkin/week` |
+| Task center | `task/task_list` → `task/get` when `get_times > 0` |
+| Browse posts | Playwright opens community article pages, then claims |
+| Member packs `benefits/pack` | `GET member_gift/list` + `list_grouped` → `member_gift/receive` (weekly/level packs; daily run, skips claimed) |
 
-「商城支付 1 次储值订单」只有你在游戏/商城真实消费后才会变成可领取；脚本负责**自动点领取**，不会替你下单。
+“Place 1 store order” only becomes claimable after a **real** purchase; the script only **claims** rewards, it does not spend money or points.
 
-## 常见问题
+## FAQ
 
-**Q: Actions 提示未登录 / h5-auth 无效**  
-A: 重新运行 `export_auth.py`，更新 `FUNPLUS_AUTH`。
+**Q: Actions says not logged in / invalid h5-auth**  
+A: Run `export_auth.py` again and update `FUNPLUS_AUTH`.
 
-**Q: 社区浏览数量是 0**  
-A: 社区是微前端，结构可能变化。先看 Actions 日志；也可本机 `FUNPLUS_HEADED=1 python main.py` 观察。脚本仍会尝试领取其他 API 任务。
+**Q: Community browse count is 0**  
+A: Community is a micro-frontend and may change. Check logs; try `FUNPLUS_HEADED=1 python main.py` locally. Other API tasks still run.
 
-**Q: 安全吗？**  
-A: 比上传 Gmail 应用密码安全得多。`FUNPLUS_AUTH` 只存会话，仍请使用私有仓库，并定期轮换。
+**Q: Is this safe?**  
+A: Safer than putting Gmail passwords in GitHub. `FUNPLUS_AUTH` is a session token — use a **private** fork/repo and refresh it periodically.
 
-## 免责声明
+## Disclaimer
 
-仅供个人学习与自用。请遵守 FunPlus 用户协议与活动规则，避免过高频率请求。
+For personal learning and self-use only. Follow FunPlus Terms of Service and event rules; avoid excessive request frequency.
