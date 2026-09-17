@@ -242,6 +242,40 @@ class FunplusClient:
     def claim_task(self, task_key: str) -> Dict[str, Any]:
         return self.post("task/get", {"task_key": task_key})
 
+    def shop_product_list(
+        self,
+        page: int = 1,
+        page_size: int = 100,
+        time_limiter: int = 0,
+        product_type: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Points mall products. time_limiter: All=0, Limit=1, NoLimit=2."""
+        payload: Dict[str, Any] = {
+            "page": page,
+            "page_size": page_size,
+            "time_limiter": time_limiter,
+        }
+        if product_type is not None:
+            payload["product_type"] = product_type
+        result = self.post("shop/product_list", payload)
+        data = _unwrap(result)
+        if isinstance(data, dict):
+            products = data.get("products") or []
+            return products if isinstance(products, list) else []
+        return []
+
+    def shop_buy(
+        self, product_id: str | int, num: int = 1, uid: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return self.post(
+            "shop/buy",
+            {
+                "product_id": int(product_id) if str(product_id).isdigit() else product_id,
+                "uid": uid or self.uid,
+                "num": num,
+            },
+        )
+
     def member_gift_list(self) -> List[Dict[str, Any]]:
         """Flat gift list (weekly / monthly / daily packs). Frontend uses GET."""
         result = self.get("member_gift/list")

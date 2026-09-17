@@ -79,7 +79,7 @@ After success, open `.auth/funplus_auth.b64.txt`, **copy the entire file content
 
 ### Step 6 — Automatic schedule
 
-No extra setup. The workflow runs daily at **08:20** and **22:20 Beijing time** (UTC cron in the YAML).
+No extra setup. The workflow runs daily at **08:30** and **14:30 Beijing time** (both within 8 hours of the UTC reset at Beijing 08:00).
 
 When login expires (days or weeks later), run **`refresh_auth.bat`** or **`export_auth.py`** again and update the `FUNPLUS_AUTH` secret.
 
@@ -99,7 +99,8 @@ When login expires (days or weeks later), run **`refresh_auth.bat`** or **`expor
 1. **Daily sign-in** (`/signinbenefit`) — monthly calendar check-in  
 2. **Task center** (`/benefits/pointstask`) — claim completed tasks (e.g. game-zone sign-in)  
 3. **Community** — browse 5 posts when logged in, then claim related tasks  
-4. **Member packs** (`/benefits/pack`) — daily check for **weekly**, **level**, and other **free** packs (skips if already claimed)
+4. **Member packs** (`/benefits/pack`) — daily check for **weekly**, **level**, and other **free** packs (skips if already claimed)  
+5. **Points mall** (`/benefits/integral`) — exchange the **2-point 10K Supply Crate once per day**, then claim「Exchange once in Points Mall」(+10)
 
 Inspired by [SJS-Check](https://github.com/LiJT/SJS-Check): scheduled GitHub Actions + session secret.
 
@@ -158,7 +159,7 @@ Optional:
 
 1. **Actions** → enable workflows  
 2. **FunPlus 每日签到** → **Run workflow** to test  
-3. Default schedule: **08:20** & **22:20** Beijing time (twice daily for reliability)
+3. Default schedule: **08:30** & **14:30** Beijing time (both within 8h of the UTC-day reset at 08:00)
 
 ## Run locally
 
@@ -176,6 +177,7 @@ python main.py
 | Task center | `task/task_list` → `task/get` when `get_times > 0` |
 | Browse posts | Playwright opens community article pages, then claims |
 | Member packs `benefits/pack` | `GET member_gift/list` + `list_grouped` → `member_gift/receive` (weekly/level packs; daily run, skips claimed) |
+| Points mall `benefits/integral` | Find 10K Supply Crate (`shop/product_list`) → buy once if `cycle_now_times==0` (`shop/buy`) → then claim mall-exchange task |
 
 “Place 1 store order” only becomes claimable after a **real** purchase; the script only **claims** rewards, it does not spend money or points.
 

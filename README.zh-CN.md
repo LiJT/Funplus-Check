@@ -79,7 +79,7 @@ python -u export_auth.py
 
 ### 第六步 — 自动定时
 
-无需额外设置。工作流每天 **北京时间 08:20、22:20** 各跑一次（在 workflow 里用 UTC 定时）。
+无需额外设置。工作流每天 **北京时间 08:30、14:30** 各跑一次（都在 UTC 日刷新点北京 08:00 前后 8 小时内）。
 
 登录态过期后（可能几天到几周），重新运行 **`refresh_auth.bat`** 或 **`export_auth.py`**，再更新 `FUNPLUS_AUTH` 即可。
 
@@ -99,7 +99,8 @@ python -u export_auth.py
 1. **会员签到礼**（`/signinbenefit`）：月历签到  
 2. **任务中心**（`/benefits/pointstask`）：领取已完成任务积分（如游戏专区签到）  
 3. **活跃任务 - 浏览帖子**：登录态下浏览社区帖子并领取  
-4. **会员专享礼包**（`/benefits/pack`）：每天检查 **每周礼包、等级礼包** 等免费项（已领则跳过）
+4. **会员专享礼包**（`/benefits/pack`）：每天检查 **每周礼包、等级礼包** 等免费项（已领则跳过）  
+5. **积分商城**（`/benefits/integral`）：每天兑换一次 **2 积分的 10K 资源补给箱**，再领取「在積分商城內兌換1次」（+10）
 
 风格参考 [SJS-Check](https://github.com/LiJT/SJS-Check)：GitHub Actions 定时执行 + Secret 存登录态。
 
@@ -158,7 +159,7 @@ python -u export_auth.py --push-secret
 
 1. **Actions** → 启用 workflow  
 2. **FunPlus 每日签到** → **Run workflow** 测试  
-3. 默认定时：北京时间 **08:20**、**22:20**（一天两次更稳）
+3. 默认定时：北京时间 **08:30**、**14:30**（都在 UTC 日刷新点北京 08:00 前后 8 小时内）
 
 ## 本地试跑
 
@@ -176,6 +177,7 @@ python main.py
 | 任务中心 | `task/task_list` → `get_times>0` 时 `task/get` |
 | 浏览帖子 | Playwright 打开社区帖子详情，再领取 |
 | 会员礼包 `benefits/pack` | `GET member_gift/list` + `list_grouped` → 可领则 `receive`（含每周/等级礼包；每天执行） |
+| 积分商城 `benefits/integral` | 查找 10K 补给箱 → 今日未兑则 `shop/buy` 一次 → 再领取「在積分商城內兌換1次」 |
 
 「商城支付 1 次储值订单」需真实消费后才可领取；脚本只负责**点领取**，不会替你下单或扣积分。
 

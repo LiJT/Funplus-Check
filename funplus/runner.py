@@ -40,6 +40,28 @@ from funplus.notify import push_plus
 SIGNIN_KEYWORDS = ("签到", "簽到", "sign-in", "signin", "sign in", "專區簽到", "专区签到")
 PURCHASE_KEYWORDS = ("储值", "儲值", "支付", "purchase", "top-up", "topup", "充值", "商城支付")
 VISIT_KEYWORDS = ("帖子", "瀏覽", "浏览", "visit", "read", "posts", "查看")
+EXCHANGE_TASK_KEYWORDS = (
+    "积分商城",
+    "積分商城",
+    "兑换1次",
+    "兌換1次",
+    "exchange once",
+    "redeem once",
+    "points store",
+    "point mall",
+)
+
+# Prefer the cheapest daily 10K supply crate used to unlock the mall-exchange task.
+TARGET_SHOP_ITEM_IDS = ("item_resource_box_medium",)
+TARGET_SHOP_NAME_KEYWORDS = (
+    "10k supply crate",
+    "10k資源補給箱",
+    "10k资源补给箱",
+    "10k資源",
+    "10k资源",
+)
+TARGET_SHOP_COST_COIN = 2
+TARGET_SHOP_BUY_ONCE = 1
 
 
 def _b64_maybe_decode(raw: str) -> str:
@@ -273,6 +295,114 @@ def summarize_tasks(tasks: List[Dict[str, Any]]) -> str:
     return "\n".join(lines) if lines else "- （无任务）"
 
 
+def _product_item_blob(product: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    for item in product.get("item_list") or []:
+        if not isinstance(item, dict):
+            continue
+        parts.append(str(item.get("item_id") or ""))
+        parts.append(str(item.get("item_name") or ""))
+    parts.append(str(product.get("name") or product.get("product_name") or ""))
+    return " ".join(parts).lower()
+
+
+def find_daily_supply_crate(products: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Find the 2-coin 10K Supply Crate used for the daily mall-exchange task."""
+    exact: List[Dict[str, Any]] = []
+    fuzzy: List[Dict[str, Any]] = []
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        blob = _product_item_blob(product)
+        cost = _as_int(product.get("cost_coin") or product.get("coin") or product.get("price"))
+        item_ids = {
+            str(item.get("item_id") or "")
+            for item in (product.get("item_list") or [])
+            if isinstance(item, dict)
+        }
+        if any(iid in TARGET_SHOP_ITEM_IDS for iid in item_ids):
+            exact.append(product)
+            continue
+        if cost == TARGET_SHOP_COST_COIN and any(k in blob for k in TARGET_SHOP_NAME_KEYWORDS):
+            fuzzy.append(product)
+    if exact:
+        return exact[0]
+    if fuzzy:
+        return fuzzy[0]
+    # Last resort: cheapest cost_coin==2 product with resource box item_id
+    candidates = []
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        cost = _as_int(product.get("cost_coin") or product.get("coin") or product.get("price"))
+        if cost != TARGET_SHOP_COST_COIN:
+            continue
+        blob = _product_item_blob(product)
+        if "resource_box" in blob or "supply crate" in blob or "補給箱" in blob or "补给箱" in blob:
+            candidates.append(product)
+    return candidates[0] if candidates else None
+
+
+def exchange_daily_supply_crate(client: FunplusClient) -> str:
+    """
+    Exchange the 2-point 10K Supply Crate at most once per UTC day.
+
+    This unlocks the task-center reward「在積分商城內兌換1次」(+10).
+    If cycle_now_times >= 1, skip buying so a second scheduled run never double-spends.
+    """
+    try:
+        products = client.shop_product_list(page=1, page_size=100, time_limiter=0)
+        if not products:
+            products = client.shop_product_list(
+                page=1, page_size=100, time_limiter=2, product_type=1
+            )
+    except Exception as exc:
+        return f"积分商城：获取商品列表失败 {exc}"
+
+    product = find_daily_supply_crate(products)
+    if not product:
+        return "积分商城：未找到 10K 资源补给箱（2 积分），跳过兑换"
+
+    product_id = product.get("id") or product.get("product_id")
+    cost = _as_int(product.get("cost_coin") or product.get("coin") or product.get("price"))
+    cycle_now = _as_int(product.get("cycle_now_times"))
+    cycle_times = _as_int(product.get("cycle_times"))
+    item_name = ""
+    items = product.get("item_list") or []
+    if items and isinstance(items[0], dict):
+        item_name = str(items[0].get("item_name") or items[0].get("item_id") or "")
+    label = item_name or f"product#{product_id}"
+
+    if not product_id:
+        return f"积分商城：商品缺少 product_id（{label}）"
+
+    if cycle_now >= TARGET_SHOP_BUY_ONCE:
+        return (
+            f"积分商城：今日已兑换过 {label}（{cycle_now}/{cycle_times}），"
+            "跳过购买，继续领取任务积分"
+        )
+
+    if cost > 0 and cost != TARGET_SHOP_COST_COIN:
+        # Safety: only auto-buy the known cheap crate
+        return (
+            f"积分商城：找到 {label} 但价格为 {cost} 积分（期望 {TARGET_SHOP_COST_COIN}），"
+            "为避免误购已跳过"
+        )
+
+    if not client.uid:
+        client.user_info()
+    result = client.shop_buy(product_id, num=1, uid=client.uid)
+    code = result.get("code")
+    msg = result.get("msg") or result.get("message") or ""
+    if code in (0, "0"):
+        return f"积分商城：兑换成功 {label}（花费 {cost} 积分，今日 1/{cycle_times or '?'}）"
+    # Treat already-bought / limit errors as soft success for the daily-once goal
+    soft = ("already", "limit", "times", "不足", "enough", "stock")
+    if any(s in str(msg).lower() for s in soft):
+        return f"积分商城：未再次购买（{label} code={code} msg={msg}）"
+    return f"积分商城：兑换失败 {label} code={code} msg={msg}"
+
+
 def claim_member_gifts(client: FunplusClient, vip_level: int = 0) -> List[str]:
     lines: List[str] = []
     vip = vip_level
@@ -407,6 +537,10 @@ def run() -> int:
         lines.append(do_monthly_signin(client))
         lines.append(do_weekly_signin(client))
 
+        # Must exchange BEFORE claiming tasks: unlocks「在積分商城內兌換1次」(+10).
+        # cycle_now_times>=1 makes a second daily run skip buying.
+        lines.append(exchange_daily_supply_crate(client))
+
         tasks = collect_tasks(client)
         lines.append("任务列表：")
         lines.append(summarize_tasks(tasks))
@@ -418,7 +552,7 @@ def run() -> int:
         else:
             lines.append("任务领取：当前没有可领取任务")
 
-        # Re-fetch after browse + claims
+        # Re-fetch after browse + exchange + claims
         tasks_after = collect_tasks(client)
         still_claimable = claim_ready_tasks(client, tasks_after)
         if still_claimable:
@@ -431,7 +565,11 @@ def run() -> int:
         unfinished = [
             _task_name(t)
             for t in tasks_after
-            if needs_goto(t) and _match(t, SIGNIN_KEYWORDS + PURCHASE_KEYWORDS + VISIT_KEYWORDS)
+            if needs_goto(t)
+            and _match(
+                t,
+                SIGNIN_KEYWORDS + PURCHASE_KEYWORDS + VISIT_KEYWORDS + EXCHANGE_TASK_KEYWORDS,
+            )
         ]
         if unfinished:
             lines.append("仍需手动完成/未达成条件：")
